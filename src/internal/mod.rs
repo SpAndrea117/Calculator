@@ -1,20 +1,27 @@
+use std::num::ParseIntError;
+
 use shunting_yard::ShuntingYard;
 use thiserror::Error;
 
+mod eval;
 mod shunting_yard;
 
+#[cfg_attr(test, derive(PartialEq))]
 #[derive(Error, Debug)]
 pub(crate) enum Error {
-    #[error(transparent)]
-    ShuntingYard(#[from] shunting_yard::Error),
+    #[error("Expression has invalid syntax")]
+    InvalidSyntax,
+    #[error("Invalid expression {0}")]
+    InvalidExpression(String),
+    #[error("Caller should have passed a digit")]
+    NumberParse(ParseIntError),
+    #[error("Invalid RPN {0} for expression")]
+    InvalidRpn(String),
 }
 
 pub(super) fn estimate_expression(expr: &str) -> Result<i64, Error> {
-    let mut shunting_yard = ShuntingYard::new(expr).map_err(Error::ShuntingYard)?;
-    shunting_yard
-        .to_rpn()
-        .compute()
-        .map_err(Error::ShuntingYard)
+    let mut shunting_yard = ShuntingYard::new(expr)?;
+    shunting_yard.to_rpn().compute()
 }
 
 #[cfg(test)]

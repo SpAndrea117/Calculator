@@ -17,12 +17,13 @@ The executable starts bringing up two threads:
 
 ### Data validation
 
-From the input expression the logic evaluate possible non-sense patterns, returning error if some. Right now, there are some filtering and correction conditions that are applied to input data before evaluating result:
-
-* If an expression contains the pattern '-(' this is automatically converted to '-1*('
-* If an expression contains one of the following patters, it is marked as invalid and is not computes: ["-*", "-/", "-)", "+*", "+/", "+)", "**", "*/", "*)", "/*", "//", "/)", "(*", "(/", ")("]
-* If an expression has different number of left brackets and right brackets, it is also marked as invalid and is not computed
-* If we have a sequence of token operators available in this list ['+-4' | '*-4' | '/-4' | '--4'], the second operator is considered as sign of following numeric value
+From the input data the parser eveluate all at once the following conditions:
+* If we have non sense sequences, InvalidSyntax error is returned to the end user
+* If we have consecutive sign operators, the last pushed operator is poped from the operator stack and it is replaced by the correct operator according to the following logic:
+    * \+ \* \+ = +
+    * \+ \* \- = -
+    * \- \* \+ = -
+    * \- \* \- = +
 
 ### Logic description
 

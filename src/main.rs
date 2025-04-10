@@ -35,7 +35,7 @@ fn main() -> io::Result<()> {
             match io::stdin().read_line(&mut buf) {
                 Ok(_) => {
                     info!("Input data -> {}", buf.trim());
-                    match estimate_expression(&buf) {
+                    match estimate_expression(&buf.trim()) {
                         Ok(res) => println!("Result of expression {} is {res}", buf.trim()),
                         Err(e) => println!("Cannot estimate expression due to error {e}"),
                     }

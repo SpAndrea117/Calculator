@@ -1,112 +1,9 @@
 use log::debug;
-use std::num::ParseIntError;
-use thiserror::Error;
 
-const TOKEN_FIXABLE_SEQUENCE: &str = "-(";
-const TOKEN_FIX_SEQUENCE: &str = "-1*(";
-const OPERATORS: [char; 6] = ['+', '-', '*', '/', '(', ')'];
-const INVALID_TOKEN_PATTERNS: [&str; 15] = [
-    "-*", "-/", "-)", "+*", "+/", "+)", "**", "*/", "*)", "/*", "//", "/)", "(*", "(/", ")(",
-];
-
-#[cfg_attr(test, derive(PartialEq))]
-#[derive(Error, Debug)]
-pub(crate) enum Error {
-    #[error("Invalid RPN {0} for expression")]
-    InvalidRpn(String),
-    #[error("Unknown operator {0}")]
-    UnknownOperator(String),
-    #[error(transparent)]
-    ParseInt(#[from] ParseIntError),
-    #[error("Invalid expression {0}")]
-    InvalidExpression(String),
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
-enum Operator {
-    LeftBracket,
-    RightBracket,
-    Prod,
-    Div,
-    Sub,
-    Add,
-}
-
-impl Operator {
-    fn execute(self, v1: i64, v2: i64) -> i64 {
-        match self {
-            Operator::LeftBracket | Operator::RightBracket => {
-                unreachable!("Hit brackets in operation execution")
-            }
-            Operator::Prod => v1 * v2,
-            Operator::Div => v1 / v2,
-            Operator::Add => v1 + v2,
-            Operator::Sub => v1 - v2,
-        }
-    }
-}
-
-impl TryFrom<char> for Operator {
-    type Error = crate::internal::shunting_yard::Error;
-
-    fn try_from(value: char) -> Result<Self, Self::Error> {
-        match value {
-            '*' => Ok(Self::Prod),
-            '/' => Ok(Self::Div),
-            '+' => Ok(Self::Add),
-            '-' => Ok(Self::Sub),
-            '(' => Ok(Self::LeftBracket),
-            ')' => Ok(Self::RightBracket),
-            _ => Err(Error::UnknownOperator(value.to_string())),
-        }
-    }
-}
-
-impl TryFrom<&str> for Operator {
-    type Error = crate::internal::shunting_yard::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "*" => Ok(Self::Prod),
-            "/" => Ok(Self::Div),
-            "+" => Ok(Self::Add),
-            "-" => Ok(Self::Sub),
-            "(" => Ok(Self::LeftBracket),
-            ")" => Ok(Self::RightBracket),
-            _ => Err(Error::UnknownOperator(value.to_string())),
-        }
-    }
-}
-
-impl From<&Operator> for String {
-    fn from(value: &Operator) -> Self {
-        match value {
-            Operator::LeftBracket | Operator::RightBracket => {
-                unreachable!("Hit brackets in RPN stringify")
-            }
-            Operator::Prod => "*".to_owned(),
-            Operator::Div => "/".to_owned(),
-            Operator::Add => "+".to_owned(),
-            Operator::Sub => "-".to_owned(),
-        }
-    }
-}
-
-#[cfg_attr(test, derive(PartialEq))]
-#[derive(Debug)]
-enum Token {
-    Number(i64),
-    Operator(Operator),
-}
-
-impl From<&Token> for String {
-    fn from(value: &Token) -> Self {
-        match value {
-            Token::Number(n) => (*n).to_string(),
-            Token::Operator(operator) => operator.into(),
-        }
-    }
-}
+use super::{
+    Error,
+    eval::{Operator, Token, parse_expr},
+};
 
 #[cfg_attr(test, derive(PartialEq))]
 #[derive(Debug)]
@@ -121,7 +18,7 @@ impl ShuntingYard {
         Ok(Self {
             operator_stack: vec![],
             output_queue: vec![],
-            tokens: parse_expression_to_token_list(expr)?,
+            tokens: parse_expr(expr)?,
         })
     }
 
@@ -236,141 +133,9 @@ impl ShuntingYard {
     }
 }
 
-///
-/// This function take input data from stdin and convert them to a token list
-/// failing if something cannot be handled properly
-/// If a '-' token is followed immediately by a '(' token then it will be
-/// converted to '-1 *'sequence
-/// It analize input string character by character applying the following rules:
-///
-/// If c is an operator -> Operator::try_from()
-/// If c is_numeric -> c.parse::<i64>()
-/// If we have a sequence of operators followed by a digit [i.e. +-4 | *-4 | /-4 | --4]
-/// It should be interpreted as:
-///     Token::Operator(Operator::Add),
-///     Token::Number(-4)
-/// If we have a sequence of operators they should result into a respective token list
-/// If we have empty spaces, just ignore them
-///
-fn parse_expression_to_token_list(expr: &str) -> Result<Vec<Token>, Error> {
-    let mut expression = expr.to_owned();
-
-    //Remove all whitespaces
-    expression.retain(|c| !c.is_whitespace());
-
-    if expression.contains(TOKEN_FIXABLE_SEQUENCE) {
-        expression = expression.replace(TOKEN_FIXABLE_SEQUENCE, TOKEN_FIX_SEQUENCE);
-    }
-
-    if !validate_token_list(&expression) {
-        return Err(Error::InvalidExpression(expr.to_owned()));
-    }
-
-    let mut last = "";
-    let mut second_last = "";
-    let mut third_to_last = "";
-    let mut indexes_to_remove = vec![];
-    let mut token_str_list = expression
-        .split_inclusive(|c| OPERATORS.contains(&c)) // Split inclusively input string on operators
-        .map(|v| {
-            if v.chars()
-                .last()
-                .and_then(|c| Some(OPERATORS.contains(&c)))
-                .is_some()
-            {
-                let split_inclusive = v.split_at(v.len() - 1);
-                vec![split_inclusive.0, split_inclusive.1]
-            } else {
-                vec![v]
-            }
-        }) // Split inclusive token to single token instance
-        .flatten() // Flatten from Vec<Vec<&str>> to Vec<&str>
-        .filter(|&p| !p.is_empty()) // Filter empty strings
-        .enumerate()
-        .map(|(i, v)| {
-            // If there is a sequence of two operators follwed by a digit, second operator (+ | -) represents digit sign. If different operator return error
-            third_to_last = second_last;
-            second_last = last;
-            last = v;
-            if Operator::try_from(third_to_last).is_ok_and(|ttl_op| {
-                (ttl_op == Operator::Add
-                    || ttl_op == Operator::Sub
-                    || ttl_op == Operator::LeftBracket
-                    || ttl_op == Operator::Div
-                    || ttl_op == Operator::Prod)
-                    && Operator::try_from(second_last).is_ok_and(|sl_op| {
-                        (sl_op == Operator::Add || sl_op == Operator::Sub)
-                            && last.parse::<i64>().is_ok()
-                    })
-            }) {
-                indexes_to_remove.push(i - 1);
-                let mut signed_value = second_last.to_string();
-                signed_value.push_str(v);
-                signed_value
-            } else {
-                v.to_string()
-            }
-        })
-        .collect::<Vec<_>>();
-
-    indexes_to_remove.reverse();
-    indexes_to_remove.into_iter().for_each(|i| {
-        token_str_list.remove(i);
-    });
-
-    token_str_list
-        .into_iter()
-        .map(|s| -> Result<Token, Error> {
-            if OPERATORS
-                .into_iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>()
-                .contains(&s)
-            {
-                Ok(Token::Operator(Operator::try_from(s.as_str())?))
-            } else {
-                Ok(Token::Number(s.parse::<i64>().map_err(Error::ParseInt)?))
-            }
-        })
-        .collect()
-}
-
-///
-/// Check if expression contains invalid patterns:
-/// Valid patterns are:
-/// * third_to_last = + && second_last = + && last = NUMBER
-/// * third_to_last = + && second_last = - && last = NUMBER
-/// * third_to_last = - && second_last = + && last = NUMBER
-/// * third_to_last = - && second_last = - && last = NUMBER
-/// * third_to_last = ( && second_last = + && last = NUMBER
-/// * third_to_last = ( && second_last = - && last = NUMBER
-/// * third_to_last = * && second_last = + && last = NUMBER
-/// * third_to_last = * && second_last = - && last = NUMBER
-/// * third_to_last = / && second_last = + && last = NUMBER
-/// * third_to_last = / && second_last = - && last = NUMBER
-/// Every other pattern is considered not valid
-/// Moreover it is mandatory to check that the number of open parenthesis match the number of closed paranthesis
-///
-fn validate_token_list(expr: &str) -> bool {
-    let number_of_open_p = expr.chars().filter(|c| *c == '(').count();
-    let number_of_closed_p = expr.chars().filter(|c| *c == ')').count();
-    if number_of_open_p != number_of_closed_p {
-        debug!(
-            "Different number of right brackets {number_of_open_p} and left brackets {number_of_closed_p}"
-        );
-        return false;
-    }
-    !INVALID_TOKEN_PATTERNS.into_iter().any(|invalid_token| {
-        if expr.contains(invalid_token) {
-            debug!("Hit invalid sequence {invalid_token}");
-        }
-        expr.contains(invalid_token)
-    })
-}
-
 #[cfg(test)]
 mod test {
-    use crate::internal::shunting_yard::parse_expression_to_token_list;
+    use crate::internal::eval::parse_expr;
 
     use super::{Error, Operator, ShuntingYard, Token};
 
@@ -379,7 +144,7 @@ mod test {
         let expression = "4 + 18/(9--3)";
 
         assert_eq!(
-            parse_expression_to_token_list(expression).unwrap(),
+            parse_expr(expression).unwrap(),
             vec![
                 Token::Number(4),                        // 4
                 Token::Operator(Operator::Add),          // +
@@ -387,8 +152,8 @@ mod test {
                 Token::Operator(Operator::Div),          // /
                 Token::Operator(Operator::LeftBracket),  // (
                 Token::Number(9),                        // 9
-                Token::Operator(Operator::Sub),          // -
-                Token::Number(-3),                       // -3
+                Token::Operator(Operator::Add),          // - * - = +
+                Token::Number(3),                        // 3
                 Token::Operator(Operator::RightBracket), // )
             ]
         );
@@ -399,7 +164,7 @@ mod test {
         let expression = "4 + 18/(9-+3)";
 
         assert_eq!(
-            parse_expression_to_token_list(expression).unwrap(),
+            parse_expr(expression).unwrap(),
             vec![
                 Token::Number(4),                        // 4
                 Token::Operator(Operator::Add),          // +
@@ -407,7 +172,7 @@ mod test {
                 Token::Operator(Operator::Div),          // /
                 Token::Operator(Operator::LeftBracket),  // (
                 Token::Number(9),                        // 9
-                Token::Operator(Operator::Sub),          // -
+                Token::Operator(Operator::Sub),          // - * + = -
                 Token::Number(3),                        // 3
                 Token::Operator(Operator::RightBracket), // )
             ]
@@ -418,26 +183,14 @@ mod test {
     fn test_shunting_yard_data_struct_from_expression_invalid_prod() {
         let expression = "4 + 18/(9-*3)";
 
-        match parse_expression_to_token_list(expression) {
-            Ok(token_list) => panic!("Invalid expression has been parsed to {token_list:#?}"),
-            Err(e) => {
-                println!("Failed to pasrse expression due to error {e}");
-                assert_eq!(e, Error::InvalidExpression(expression.to_string()))
-            }
-        };
+        assert_eq!(parse_expr(expression), Err(Error::InvalidSyntax));
     }
 
     #[test]
     fn test_shunting_yard_data_struct_from_expression_invalid_div() {
         let expression = "4 + 18/(9-/3)";
 
-        match parse_expression_to_token_list(expression) {
-            Ok(token_list) => panic!("Invalid expression has been parsed to {token_list:#?}"),
-            Err(e) => {
-                println!("Failed to pasrse expression due to error {e}");
-                assert_eq!(e, Error::InvalidExpression(expression.to_string()))
-            }
-        };
+        assert_eq!(parse_expr(expression), Err(Error::InvalidSyntax));
     }
 
     #[test]
